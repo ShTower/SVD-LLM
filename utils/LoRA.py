@@ -22,8 +22,16 @@ from peft import (
     set_peft_model_state_dict,
 )
 from Prompter import Prompter, ZeroPrompter
+from utils.device_utils import detect_device_str, is_npu
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = detect_device_str()
+
+def safe_prepare_int8(model):
+    """prepare_model_for_int8_training, falls back to fp16 on NPU/CPU."""
+    if is_npu(device) or device == "cpu":
+        print("[LoRA] NPU/CPU detected, skipping int8 training prep (using fp16)")
+        return model
+    return prepare_model_for_int8_training(model)
 
 def wikitext2():
     traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
@@ -43,7 +51,7 @@ def apply_lora(model, tokenizer, batch_size=64, micro_batch_size=4, cutoff_len=2
     gradient_accumulation_steps = batch_size // micro_batch_size
     prompter = ZeroPrompter()
 
-    if device == 'cuda':
+    if device in ('cuda', 'npu'):
         model.half()
 
     tokenizer.pad_token_id = 0
@@ -109,7 +117,7 @@ def apply_lora(model, tokenizer, batch_size=64, micro_batch_size=4, cutoff_len=2
         return test_set
 
     # Prepare For LoRA
-    model = prepare_model_for_int8_training(model)
+    model = safe_prepare_int8(model)
     config = LoraConfig(
         r=lora_r,
         lora_alpha=lora_alpha,
@@ -201,7 +209,7 @@ def main(args):
     else:
         prompter = ZeroPrompter()
 
-    if device == 'cuda':
+    if device in ('cuda', 'npu'):
         model.half()
 
     tokenizer.pad_token_id = 0
@@ -268,7 +276,7 @@ def main(args):
         return test_set
 
     # Prepare For LoRA
-    model = prepare_model_for_int8_training(model)
+    model = safe_prepare_int8(model)
     config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,

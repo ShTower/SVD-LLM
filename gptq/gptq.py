@@ -10,7 +10,9 @@ import os
 current_path = os.path.dirname(os.path.abspath(__file__))
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(current_path)
+sys.path.append(parent_path)
 from quant import *
+from utils.device_utils import clear_cache, sync_device
 
 
 DEBUG = False 
@@ -153,7 +155,7 @@ class GPTQ:
                 print(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
                 print(torch.sum(Losses))
 
-        torch.cuda.synchronize()
+        sync_device()
         print('time %.2f' % (time.time() - tick))
         print('error', torch.sum(Losses).item())
 
@@ -173,4 +175,4 @@ class GPTQ:
         self.H = None
         self.Losses = None
         self.Trace = None
-        torch.cuda.empty_cache()
+        clear_cache()

@@ -12,7 +12,12 @@ from component.svd_llama import SVD_LlamaAttention, SVD_LlamaMLP
 from component.svd_mistral import SVD_MistralAttention, SVD_MistralMLP
 from component.svd_opt import SVDOPTDecoderLayer
 from utils.model_utils import *
-from evaluater import * 
+from evaluater import *
+from utils.device_utils import (
+    safe_cholesky, safe_inv, safe_svd, safe_lstsq, safe_eigvalsh,
+    clear_cache, detect_device_str,
+)
+
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -36,7 +41,7 @@ def profle_svdllm(name, model, calib_loader, dev):
         adds_sum = torch.sum(adds, dim=0)
         module.raw_scaling_diag_matrix += adds_sum
         del inp, adds, adds_sum
-        torch.cuda.empty_cache()
+        clear_cache()
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
             module.raw_scaling_diag_matrix = 0
@@ -47,7 +52,7 @@ def profle_svdllm(name, model, calib_loader, dev):
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
             module._forward_hooks.clear()
-    torch.cuda.empty_cache()
+    clear_cache()
     model = model.cpu()
     for i in range(len(layers)):
         subset = find_layers(layers[i])
@@ -61,18 +66,18 @@ def profle_svdllm(name, model, calib_loader, dev):
         for name in subset:
             raw_scaling_diag_matrix = subset[name].raw_scaling_diag_matrix.double().to(dev)
             try:
-                scaling_diag_matrix = torch.linalg.cholesky(raw_scaling_diag_matrix)
+                scaling_diag_matrix = safe_cholesky(raw_scaling_diag_matrix)
             except Exception as e:
                 print("Warning: eigen scaling_diag_matrix is not positive!")
-                eigenvalues = torch.linalg.eigvalsh(raw_scaling_diag_matrix)
+                eigenvalues = safe_eigvalsh(raw_scaling_diag_matrix)
                 raw_scaling_diag_matrix += (- eigenvalues[0] + 1e-6) * torch.eye(raw_scaling_diag_matrix.shape[0]).to(dev)
-                scaling_diag_matrix = torch.linalg.cholesky(raw_scaling_diag_matrix)
+                scaling_diag_matrix = safe_cholesky(raw_scaling_diag_matrix)
                 eigenvalues = None
                 del eigenvalues
             layer_profile[name] = scaling_diag_matrix.cpu()
             scaling_diag_matrix = raw_scaling_diag_matrix = subset[name].raw_scaling_diag_matrix = None
             del scaling_diag_matrix, raw_scaling_diag_matrix, subset[name].raw_scaling_diag_matrix
-            torch.cuda.empty_cache()
+            clear_cache()
         profiling_mat[i] = layer_profile
     return profiling_mat
         
@@ -127,7 +132,7 @@ def profle_svdllm_low_resource(model_name, model, calib_loader, dev):
     else:  
         model.model.embed_tokens = model.model.embed_tokens.cpu()
         model.model.norm = model.model.norm.cpu()
-    torch.cuda.empty_cache()
+    clear_cache()
     outs = torch.zeros_like(inps)
     attention_masks = cache['attention_mask']
     if "opt" not in model_name:
@@ -145,7 +150,7 @@ def profle_svdllm_low_resource(model_name, model, calib_loader, dev):
             adds_sum = torch.sum(adds, dim=0)
             module.scaling_diag_matrix += adds_sum
             del inp, adds, adds_sum, output
-            torch.cuda.empty_cache()
+            clear_cache()
         handles = []
         for name in subset:
             subset[name].scaling_diag_matrix = 0
@@ -160,26 +165,26 @@ def profle_svdllm_low_resource(model_name, model, calib_loader, dev):
         layer = layer.cpu()
         for name in subset:
             subset[name].scaling_diag_matrix = subset[name].scaling_diag_matrix.cpu()
-        torch.cuda.empty_cache()
+        clear_cache()
         for name in subset:
             raw_scaling_diag_matrix = subset[name].scaling_diag_matrix.double().to(dev)
             try:
-                scaling_diag_matrix = torch.linalg.cholesky(raw_scaling_diag_matrix)
+                scaling_diag_matrix = safe_cholesky(raw_scaling_diag_matrix)
             except Exception as e:
                 print("Warning: eigen scaling_diag_matrix is not positive!")
-                eigenvalues = torch.linalg.eigvalsh(raw_scaling_diag_matrix)
+                eigenvalues = safe_eigvalsh(raw_scaling_diag_matrix)
                 raw_scaling_diag_matrix += (- eigenvalues[0] + 1e-6) * torch.eye(raw_scaling_diag_matrix.shape[0]).to(dev)
-                scaling_diag_matrix = torch.linalg.cholesky(raw_scaling_diag_matrix)
+                scaling_diag_matrix = safe_cholesky(raw_scaling_diag_matrix)
                 eigenvalues = None
                 del eigenvalues
             layer_profile[name] = scaling_diag_matrix.cpu()
             scaling_diag_matrix = raw_scaling_diag_matrix = subset[name].raw_scaling_diag_matrix = None
             del scaling_diag_matrix, raw_scaling_diag_matrix, subset[name].raw_scaling_diag_matrix
-            torch.cuda.empty_cache()
+            clear_cache()
         layers[i] = layer.cpu()
         profiling_mat[i] = layer_profile
         inps = outs
-        torch.cuda.empty_cache()
+        clear_cache()
     return profiling_mat
      
  
@@ -209,15 +214,15 @@ def whitening(model_name, model, profiling_mat, ratio, dev):
             dtype = W.dtype
             scaling_diag_matrix = profiling_mat[i][name].to(dev)
             try:
-                scaling_matrix_inv = torch.linalg.inv(scaling_diag_matrix)
+                scaling_matrix_inv = safe_inv(scaling_diag_matrix)
             except Exception as e:
                 print("Warning: scaling_diag_matrix is not full rank!")
                 scaling_diag_matrix += 1e-6 * torch.eye(scaling_diag_matrix.shape[0]).to(dev)
-                scaling_matrix_inv = torch.linalg.inv(scaling_diag_matrix)
+                scaling_matrix_inv = safe_inv(scaling_diag_matrix)
             scaling_diag_matrix = scaling_diag_matrix.float()
             scaling_matrix_inv = scaling_matrix_inv.float()
             W_scale = torch.matmul(W, scaling_diag_matrix)
-            U, S, VT = torch.linalg.svd(W_scale, full_matrices=False)
+            U, S, VT = safe_svd(W_scale, full_matrices=False)
             num_s_after_trunc = int(W.shape[0] * W.shape[1] * ratio / (W.shape[0] + W.shape[1]))
             truc_s = S[:num_s_after_trunc]
             truc_u = U[:, :num_s_after_trunc]
@@ -282,7 +287,7 @@ def whitening(model_name, model, profiling_mat, ratio, dev):
             W = W_scale = scaling_matrix_inv = scaling_diag_matrix = U = S = VT  = truc_s = truc_u = truc_v = sqrtSigma = None
             del  W, W_scale, scaling_matrix_inv, scaling_diag_matrix, U, S, VT, truc_s, truc_u, truc_v, sqrtSigma
         del layer
-        torch.cuda.empty_cache()
+        clear_cache()
 
 
 @torch.no_grad()
@@ -333,7 +338,7 @@ def whitening_local_update(model_name, model, dataloader, profiling_mat, ratio, 
     layers[0] = layers[0].cpu()
     model.model.embed_tokens = model.model.embed_tokens.cpu()
     model.model.norm = model.model.norm.cpu()
-    torch.cuda.empty_cache()
+    clear_cache()
     outs = torch.zeros_like(inps)
     attention_masks = cache['attention_mask']
     if "opt" not in model_name:
@@ -432,7 +437,7 @@ def whitening_local_update(model_name, model, dataloader, profiling_mat, ratio, 
             outs = layer(inps, attention_mask=attention_masks)[0]
         layers[i] = layer.cpu()
         del gpts
-        torch.cuda.empty_cache()
+        clear_cache()
         inps = outs
         outs = None
         del outs
@@ -449,26 +454,26 @@ class local_update:
         self.rows = W.shape[0]
         self.columns = W.shape[1]
         if direct_update:
-            self.U, self.S, self.VT = torch.linalg.svd(W.data, full_matrices=False)
+            self.U, self.S, self.VT = safe_svd(W.data, full_matrices=False)
         else: 
             try:
-                scaling_matrix_inv = torch.linalg.inv(scaling_diag_matrix)
+                scaling_matrix_inv = safe_inv(scaling_diag_matrix)
             except Exception as e:
                 print("Warning: scaling_diag_matrix is not full rank!")
                 scaling_diag_matrix += 1e-6 * torch.eye(scaling_diag_matrix.shape[0])
-                scaling_matrix_inv = torch.linalg.inv(scaling_diag_matrix)
+                scaling_matrix_inv = safe_inv(scaling_diag_matrix)
             scaling_diag_matrix = scaling_diag_matrix.float()
             scaling_matrix_inv = scaling_matrix_inv.float()
             W_scale = torch.matmul(W, scaling_diag_matrix)
-            self.U, self.S, self.VT = torch.linalg.svd(W_scale, full_matrices=False)  
+            self.U, self.S, self.VT = safe_svd(W_scale, full_matrices=False)  
         # trucation SVD
         num_s_after_trunc = int(W.shape[0] * W.shape[1] * ratio / (W.shape[0] + W.shape[1]))
-        self.truc_s = self.S[:num_s_after_trunc].cuda()
-        self.truc_u = self.U[:, :num_s_after_trunc].cuda()
+        self.truc_s = self.S[:num_s_after_trunc].to(self.dev)
+        self.truc_u = self.U[:, :num_s_after_trunc].to(self.dev)
         if direct_update:
-            self.truc_v = self.VT[:num_s_after_trunc, :].cuda()
+            self.truc_v = self.VT[:num_s_after_trunc, :].to(self.dev)
         else:
-            self.truc_v = torch.matmul(self.VT[:num_s_after_trunc, :].cuda(), scaling_matrix_inv)
+            self.truc_v = torch.matmul(self.VT[:num_s_after_trunc, :].to(self.dev), scaling_matrix_inv)
         self.truc_sigma = torch.diag(self.truc_s)
         self.new_w = torch.matmul(self.truc_u, torch.matmul(self.truc_sigma, self.truc_v[:num_s_after_trunc, :]))
         # intialize H for close form solution
@@ -482,13 +487,13 @@ class local_update:
         self.error = torch.sqrt(torch.sum((outs - new_output)**2)).item() / torch.norm(outs, p='fro').item()
         # print(f"truncted error: {self.error}")
         x =  torch.matmul(torch.matmul(inps, self.truc_v.T), self.truc_sigma)
-        self.updated_uT = torch.linalg.lstsq(x,outs).solution
+        self.updated_uT = safe_lstsq(x,outs).solution
         updated_output = torch.matmul(torch.matmul(torch.matmul(inps, self.truc_v.T), self.truc_sigma), self.updated_uT)
         self.updated_error = torch.sqrt(torch.sum((outs - updated_output)**2)).item() / torch.norm(outs, p='fro').item()
         # print(f"updated error: {self.updated_error}")
         inps = outs = new_output = updated_output = x = new_w = None
         del inps, outs, new_output, updated_output, x, new_w
-        torch.cuda.empty_cache()
+        clear_cache()
         # print(f"Finish {self.name}"
     
     def fasterprune(self):
@@ -512,7 +517,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_path', type=str, default=None, help='the path to save the compressed model checkpoints.`')
     parser.add_argument('--profiling_mat_path', type=str, default=None, help='Local path to load the profiling matrices`')
     parser.add_argument('--seed',type=int, default=0, help='Seed for sampling the calibration data')
-    parser.add_argument('--DEV', type=str, default="cuda", help='device')
+    parser.add_argument('--DEV', type=str, default=detect_device_str(), help='device: auto/npu/cuda/cpu')
     parser.add_argument('--model_seq_len', type=int, default=2048, help='the default sequence length of the LLM')
     parser.add_argument('--eval_batch_size', type=int, default=4, help='inference bactch size')
     parser.add_argument('--gen_seq_len', type=int, default=1024, help='generated sequence len for efficiency evaluation')

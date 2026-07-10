@@ -7,6 +7,7 @@ from gptq.gptq import *
 from utils.model_utils import *
 from gptq.quant import *
 from evaluater import ppl_eval
+from utils.device_utils import clear_cache, detect_device_str
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -51,7 +52,7 @@ def llama_sequential(model, dataloader, dev):
     layers[0] = layers[0].cpu()
     model.model.embed_tokens = model.model.embed_tokens.cpu()
     model.model.norm = model.model.norm.cpu()
-    torch.cuda.empty_cache()
+    clear_cache()
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -112,7 +113,7 @@ def llama_sequential(model, dataloader, dev):
         layers[i] = layer.cpu()
         del layer
         del gptq 
-        torch.cuda.empty_cache()
+        clear_cache()
 
         inps, outs = outs, inps
 
@@ -161,7 +162,7 @@ def llama_eval(model, testenc, dev):
 
     layers[0] = layers[0].cpu()
     model.model.embed_tokens = model.model.embed_tokens.cpu()
-    torch.cuda.empty_cache()
+    clear_cache()
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -188,7 +189,7 @@ def llama_eval(model, testenc, dev):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
         layers[i] = layer.cpu()
         del layer
-        torch.cuda.empty_cache()
+        clear_cache()
         inps, outs = outs, inps
 
     if model.model.norm is not None:

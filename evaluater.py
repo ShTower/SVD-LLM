@@ -4,6 +4,10 @@ from tqdm import tqdm
 import time
 import itertools
 from utils.data_utils import get_test_data
+from utils.device_utils import (
+    allocated_memory, max_allocated_memory, reset_peak_memory,
+    sync_device, clear_cache, detect_device_str,
+)
 import os
 import sys
 
@@ -12,7 +16,9 @@ parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(current_path)
 
 @torch.no_grad()
-def ppl_eval(model, tokenizer, datasets=['wikitext2', 'ptb', 'c4'], model_seq_len=2048, batch_size=32, device="cuda"):
+def ppl_eval(model, tokenizer, datasets=['wikitext2', 'ptb', 'c4'], model_seq_len=2048, batch_size=32, device=None):
+    if device is None:
+        device = detect_device_str()
     model.to(device)
     model.eval()
     ppls = {}
@@ -33,11 +39,13 @@ def ppl_eval(model, tokenizer, datasets=['wikitext2', 'ptb', 'c4'], model_seq_le
         ppl = np.exp(torch.cat(nlls, dim=-1).mean().item())
         ppls[dataset] = ppl
     print("PPL after pruning: {}".format(ppls))
-    print("Weight Memory: {} MiB\n".format(torch.cuda.memory_allocated()/1024/1024))
+    print("Weight Memory: {} MiB\n".format(allocated_memory()/1024/1024))
 
 # only call this function when for 65b or more model    
 @torch.no_grad()
-def ppl_eval_large(model, tokenizer, datasets=['wikitext2', 'ptb', 'c4'], seq_len=2048, batch_size=32, device="cuda"):
+def ppl_eval_large(model, tokenizer, datasets=['wikitext2', 'ptb', 'c4'], seq_len=2048, batch_size=32, device=None):
+    if device is None:
+        device = detect_device_str()
     import  torch.nn as nn
     class LlamaRMSNorm(nn.Module):
         def __init__(self, hidden_size=model.config.hidden_size, eps=model.config.rms_norm_eps):
@@ -54,8 +62,8 @@ def ppl_eval_large(model, tokenizer, datasets=['wikitext2', 'ptb', 'c4'], seq_le
             variance = hidden_states.pow(2).mean(-1, keepdim=True)
             hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
             return self.weight * hidden_states.to(input_dtype)
-    norm = LlamaRMSNorm().half().cuda()
-    lm_head = model.lm_head.cuda()
+    norm = LlamaRMSNorm().half().to(device)
+    lm_head = model.lm_head.to(device)
     model.eval()
     ppls = {}
     layers = model.model.layers
@@ -63,13 +71,13 @@ def ppl_eval_large(model, tokenizer, datasets=['wikitext2', 'ptb', 'c4'], seq_le
         test_loader = get_test_data(dataset, tokenizer, seq_len=seq_len, batch_size = batch_size)
         nlls = []
         for batch in tqdm(test_loader):
-            model.model.embed_tokens = model.model.embed_tokens.cuda()
-            model.model.norm = model.model.norm.cuda()
-            layers[0] = layers[0].cuda()
+            model.model.embed_tokens = model.model.embed_tokens.to(device)
+            model.model.norm = model.model.norm.to(device)
+            layers[0] = layers[0].to(device)
 
             dtype = next(iter(model.parameters())).dtype
             inps = torch.zeros(
-                (batch.shape[0], model.seqlen, model.config.hidden_size), dtype=dtype, device="cuda"
+                (batch.shape[0], model.seqlen, model.config.hidden_size), dtype=dtype, device=device
             )
             cache = {'i': 0, 'attention_mask': None, "position_ids": None}
             class Catcher(nn.Module):
@@ -89,27 +97,27 @@ def ppl_eval_large(model, tokenizer, datasets=['wikitext2', 'ptb', 'c4'], seq_le
             layers[0] = Catcher(layers[0])
             for j in range(batch.shape[0]):
                 try:
-                    model(batch[j].unsqueeze(0).cuda())
+                    model(batch[j].unsqueeze(0).to(device))
                 except ValueError:
                     pass
             layers[0] = layers[0].module
             layers[0] = layers[0].cpu()
             model.model.embed_tokens = model.model.embed_tokens.cpu()
             model.model.norm = model.model.norm.cpu()
-            torch.cuda.empty_cache()
+            clear_cache()
             attention_masks = cache['attention_mask']
             position_ids = cache['position_ids']
             for i in range(len(layers)):
-                layer = layers[i].cuda()
+                layer = layers[i].to(device)
                 outs = layer(inps, attention_mask=attention_masks, position_ids=position_ids)[0]
                 layers[i] = layer.cpu()
                 inps = outs
-                torch.cuda.empty_cache()
+                clear_cache()
             hidden_states = norm(outs)
             lm_logits = lm_head(hidden_states)
             if torch.isfinite(lm_logits).all():
                 shift_logits = lm_logits[:, :-1, :].contiguous()
-                shift_labels = batch[:, 1:].contiguous().cuda()
+                shift_labels = batch[:, 1:].contiguous().to(device)
                 
                 loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
                 loss = loss_fct(shift_logits.reshape(-1, shift_logits.size(-1)), shift_labels.view(-1))
@@ -119,24 +127,26 @@ def ppl_eval_large(model, tokenizer, datasets=['wikitext2', 'ptb', 'c4'], seq_le
         ppl = np.exp(torch.cat(nlls, dim=-1).mean().item())
         ppls[dataset] = ppl
     print("PPL after pruning: {}".format(ppls))
-    print("Weight Memory: {} MiB\n".format(torch.cuda.memory_allocated()/1024/1024))
+    print("Weight Memory: {} MiB\n".format(allocated_memory()/1024/1024))
 
 @torch.no_grad()
-def eff_eval(model, tokenizer, dataset='wikitext2', original_len=4, generated_len=128, batch_size=1, device="cuda"):
+def eff_eval(model, tokenizer, dataset='wikitext2', original_len=4, generated_len=128, batch_size=1, device=None):
+    if device is None:
+        device = detect_device_str()
     model.eval()
     throughput = 0
     token_num = 0
     end_memory = 0
     num_batches_to_fetch = 10
     test_loader = get_test_data(dataset, tokenizer, seq_len=original_len, batch_size = batch_size)
-    weight_memory = torch.cuda.memory_allocated()
+    weight_memory = allocated_memory(device)
     for batch_idx, batch_data in enumerate(itertools.islice(test_loader, num_batches_to_fetch)):
         batch = batch_data.to(device)
         token_num += batch.shape[0] * generated_len
-        torch.cuda.empty_cache()
-        start_memory = torch.cuda.memory_allocated()
-        torch.cuda.reset_peak_memory_stats(0)
-        torch.cuda.synchronize()
+        clear_cache()
+        start_memory = allocated_memory()
+        reset_peak_memory(0)
+        sync_device()
         start_time = time.time()
         generation_output = model.generate(
                 input_ids=batch,
@@ -148,9 +158,9 @@ def eff_eval(model, tokenizer, dataset='wikitext2', original_len=4, generated_le
                 top_p=0.95,
                 temperature=1,
         )
-        torch.cuda.synchronize()
+        sync_device()
         end_time = time.time()
-        end_memory = max(torch.cuda.max_memory_allocated(0), end_memory)
+        end_memory = max(max_allocated_memory(0), end_memory)
         if torch.isfinite(generation_output[0]).all():  # check if the generation is successful since fp16 may cause nan
             throughput += end_time - start_time
             print("time: {}".format(end_time - start_time))

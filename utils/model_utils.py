@@ -8,8 +8,9 @@ current_path = os.path.dirname(os.path.abspath(__file__))
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(current_path)
 
-# bandaid fix
-dev = torch.device("cuda")
+# bandaid fix — auto-detect device, no longer hardcoded to cuda
+from utils.device_utils import detect_device
+dev = detect_device()
 
 def get_model_from_huggingface(model_id):
     from transformers import AutoModelForCausalLM, LlamaTokenizer, AutoTokenizer, LlamaForCausalLM

@@ -171,6 +171,57 @@ def safe_lstsq(A, B):
 
 
 # ═══════════════════════════════════════════════════════════
+# 随机化 SVD（可选加速，不修改原代码）
+# ═══════════════════════════════════════════════════════════
+
+def randomized_svd(A, k, n_oversamples=10, n_power_iter=2):
+    """
+    随机化 SVD — 只计算前 k 个奇异值，比完整 SVD 快 5-20 倍。
+
+    算法: Halko et al. "Finding structure with randomness" (2011)
+
+    Args:
+        A:      输入矩阵 (m, n)
+        k:      保留的奇异值数量
+        n_oversamples: 过采样数（默认 10，提高精度）
+        n_power_iter:  Power iteration 次数（默认 2，改善奇异值衰减）
+
+    Returns:
+        U[:, :k], S[:k], Vh[:k, :] — 与 torch.linalg.svd 接口一致
+    """
+    m, n = A.shape
+    orig_device = A.device
+
+    # 在 CPU 上执行随机化 SVD（NPU 可能不支持 QR）
+    if orig_device.type in ("npu", "cuda"):
+        U, S, Vh = randomized_svd(A.cpu(), k, n_oversamples, n_power_iter)
+        return U.to(orig_device), S.to(orig_device), Vh.to(orig_device)
+
+    # 1. 随机投影
+    p = k + n_oversamples
+    Omega = torch.randn(n, p, dtype=A.dtype, device=A.device)
+
+    # 2. 构建采样矩阵 Y = A @ Omega
+    Y = A @ Omega
+
+    # 3. Power iteration — 改善奇异值衰减速度
+    for _ in range(n_power_iter):
+        Y = A @ (A.T @ Y)
+
+    # 4. QR 分解获得正交基
+    Q, _ = torch.linalg.qr(Y)
+
+    # 5. 在小矩阵上做 SVD: B = Q^T @ A  shape (p, n)
+    B = Q.T @ A
+    Ub, S, Vh = torch.linalg.svd(B, full_matrices=False)
+
+    # 6. 还原 U = Q @ Ub
+    U = Q @ Ub
+
+    return U[:, :k], S[:k], Vh[:k, :]
+
+
+# ═══════════════════════════════════════════════════════════
 # 信息输出
 # ═══════════════════════════════════════════════════════════
 

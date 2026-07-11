@@ -189,7 +189,7 @@ def profle_svdllm_low_resource(model_name, model, calib_loader, dev):
      
  
 @torch.no_grad()
-def whitening(model_name, model, profiling_mat, ratio, dev):
+def whitening(model_name, model, profiling_mat, ratio, dev, use_rng_svd=False):
     model.eval()
     if 'opt' in model_name:
         layers = model.model.decoder.layers
@@ -222,8 +222,9 @@ def whitening(model_name, model, profiling_mat, ratio, dev):
             scaling_diag_matrix = scaling_diag_matrix.float()
             scaling_matrix_inv = scaling_matrix_inv.float()
             W_scale = torch.matmul(W, scaling_diag_matrix)
-            U, S, VT = safe_svd(W_scale, full_matrices=False)
             num_s_after_trunc = int(W.shape[0] * W.shape[1] * ratio / (W.shape[0] + W.shape[1]))
+            rng_k = num_s_after_trunc if use_rng_svd else None
+            U, S, VT = safe_svd(W_scale, full_matrices=False, rng_k=rng_k)
             truc_s = S[:num_s_after_trunc]
             truc_u = U[:, :num_s_after_trunc]
             truc_v = torch.matmul(VT[:num_s_after_trunc, :], scaling_matrix_inv)
@@ -291,7 +292,7 @@ def whitening(model_name, model, profiling_mat, ratio, dev):
 
 
 @torch.no_grad()
-def whitening_local_update(model_name, model, dataloader, profiling_mat, ratio, dev, direct_update=False):
+def whitening_local_update(model_name, model, dataloader, profiling_mat, ratio, dev, direct_update=False, use_rng_svd=False):
     print("Start SVD decomposition then update...")
     use_cache = model.config.use_cache
     model.config.use_cache = False
@@ -360,7 +361,7 @@ def whitening_local_update(model_name, model, dataloader, profiling_mat, ratio, 
                 scaling_diag_matrix = profiling_mat[i][name].to(dev)
             else: 
                 scaling_diag_matrix = None
-            gpts[name] = local_update(subset[name], scaling_diag_matrix = scaling_diag_matrix, ratio=ratio, name=name, direct_update=direct_update)
+            gpts[name] = local_update(subset[name], scaling_diag_matrix = scaling_diag_matrix, ratio=ratio, name=name, direct_update=direct_update, use_rng_svd=use_rng_svd)
         
         def add_batch(name):
             def tmp(_, inp, out):
@@ -445,7 +446,7 @@ def whitening_local_update(model_name, model, dataloader, profiling_mat, ratio, 
 
 
 class local_update:
-    def __init__(self, layer, scaling_diag_matrix, ratio, name, direct_update=False):
+    def __init__(self, layer, scaling_diag_matrix, ratio, name, direct_update=False, use_rng_svd=False):
         self.layer = layer
         self.name = name
         self.dev = self.layer.weight.device
@@ -453,9 +454,12 @@ class local_update:
         W = layer.weight.data.clone()
         self.rows = W.shape[0]
         self.columns = W.shape[1]
+        # trucation SVD — compute k first (needed for randomized SVD)
+        num_s_after_trunc = int(W.shape[0] * W.shape[1] * ratio / (W.shape[0] + W.shape[1]))
+        rng_k = num_s_after_trunc if use_rng_svd else None
         if direct_update:
-            self.U, self.S, self.VT = safe_svd(W.data, full_matrices=False)
-        else: 
+            self.U, self.S, self.VT = safe_svd(W.data, full_matrices=False, rng_k=rng_k)
+        else:
             try:
                 scaling_matrix_inv = safe_inv(scaling_diag_matrix)
             except Exception as e:
@@ -465,9 +469,7 @@ class local_update:
             scaling_diag_matrix = scaling_diag_matrix.float()
             scaling_matrix_inv = scaling_matrix_inv.float()
             W_scale = torch.matmul(W, scaling_diag_matrix)
-            self.U, self.S, self.VT = safe_svd(W_scale, full_matrices=False)  
-        # trucation SVD
-        num_s_after_trunc = int(W.shape[0] * W.shape[1] * ratio / (W.shape[0] + W.shape[1]))
+            self.U, self.S, self.VT = safe_svd(W_scale, full_matrices=False, rng_k=rng_k)
         self.truc_s = self.S[:num_s_after_trunc].to(self.dev)
         self.truc_u = self.U[:, :num_s_after_trunc].to(self.dev)
         if direct_update:
@@ -523,6 +525,7 @@ if __name__ == '__main__':
     parser.add_argument('--gen_seq_len', type=int, default=1024, help='generated sequence len for efficiency evaluation')
     parser.add_argument('--step', type=int, default=4, help='the step to run the compression')
     parser.add_argument('--lora', type=str, default=None, help='the lora updated weight path to run the accuracy evaluation')
+    parser.add_argument('--rng_svd', action='store_true', help='use randomized SVD for speed (best for ratio>=0.4)')
     
     args = parser.parse_args()
     args.ratio = 1- args.ratio
@@ -536,7 +539,7 @@ if __name__ == '__main__':
                 torch.save(profiling_mat, args.save_path + "/" + args.model.replace("/", "_").replace("-", "_") + '_profiling_'+ args.dataset + '_' + str(args.whitening_nsamples)  + '_' + str(args.seed)+ '.pt')
         else:
             profiling_mat = torch.load(args.profiling_mat_path)
-        whitening(args.model, model, profiling_mat, args.ratio, args.DEV)
+        whitening(args.model, model, profiling_mat, args.ratio, args.DEV, use_rng_svd=args.rng_svd)
         if args.save_path is not None:
             torch.save({'model': model, 'tokenizer': tokenizer}, args.save_path + "/" + args.model.replace("/", "_").replace("-", "_") +'_whitening_only_' + str(args.ratio) + '.pt')   # fp32
     elif args.step == 2:
@@ -551,7 +554,7 @@ if __name__ == '__main__':
                 torch.save(profiling_mat, args.save_path + "/" + args.model.replace("/", "_").replace("-", "_") + '_profiling_'+ args.dataset + '_' + str(args.whitening_nsamples)  + '_' + str(args.seed)+ '.pt')
         else:
             profiling_mat = torch.load(args.profiling_mat_path)
-        whitening_local_update(args.model, model, dataloader, profiling_mat, args.ratio, args.DEV)
+        whitening_local_update(args.model, model, dataloader, profiling_mat, args.ratio, args.DEV, use_rng_svd=args.rng_svd)
         if args.save_path is not None:
             torch.save({'model': model, 'tokenizer': tokenizer}, args.save_path + "/" + args.model.replace("/", "_").replace("-", "_") +'_whitening_then_update_' + str(args.ratio) + '.pt')  # fp32
     elif args.step == 3:
@@ -559,7 +562,7 @@ if __name__ == '__main__':
         model = model.eval()
         model = model.float()
         dataloader, _ = get_loaders(args.dataset, nsamples=args.updating_nsamples, seed=args.seed, tokenizer=tokenizer, seqlen=args.model_seq_len)
-        whitening_local_update(model_name=args.model, model=model, dataloader=dataloader, profiling_mat=None, ratio=args.ratio, dev=args.DEV, direct_update=True)
+        whitening_local_update(model_name=args.model, model=model, dataloader=dataloader, profiling_mat=None, ratio=args.ratio, dev=args.DEV, direct_update=True, use_rng_svd=args.rng_svd)
         if args.save_path is not None:
             torch.save({'model': model, 'tokenizer': tokenizer}, args.save_path + "/" + args.model.replace("/", "_").replace("-", "_") +'_update_only_' + str(args.ratio) + '.pt')   # fp32
     elif args.step >= 4:

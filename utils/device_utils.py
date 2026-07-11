@@ -147,8 +147,13 @@ def safe_inv(x):
     return _cpu_fallback(x, lambda t: torch.linalg.inv(t))
 
 
-def safe_svd(x, full_matrices=False):
-    """SVD 分解，NPU 回退 CPU"""
+def safe_svd(x, full_matrices=False, rng_k=None):
+    """
+    SVD 分解，NPU 回退 CPU。
+    若 rng_k 不为 None，使用随机化 SVD 加速（仅计算前 rng_k 个奇异值）。
+    """
+    if rng_k is not None:
+        return _cpu_fallback(x, lambda t: randomized_svd(t, rng_k))
     return _cpu_fallback(x, lambda t: torch.linalg.svd(t, full_matrices=full_matrices))
 
 

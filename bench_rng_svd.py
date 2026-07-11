@@ -2,7 +2,12 @@
 随机化 SVD 速度/精度 Benchmark（独立脚本，不修改原代码）
 
 用法：
-    python bench_rng_svd.py --model jeffwan/llama-7b-hf --ratio 0.8 --device cpu
+    # 默认参数（速度优先）
+    python bench_rng_svd.py --model jeffwan/llama-7b-hf --ratio 0.8 --n_samples 5
+    # 高精度模式（更多过采样 + 更多 power iter）
+    python bench_rng_svd.py --model jeffwan/llama-7b-hf --ratio 0.8 --n_oversamples 20 --n_power_iter 4
+    # 高压缩比模式（40% 压缩，k 值小，加速更明显）
+    python bench_rng_svd.py --model jeffwan/llama-7b-hf --ratio 0.6 --n_samples 2
 """
 
 import argparse
@@ -33,6 +38,10 @@ def benchmark():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--n_samples", type=int, default=10,
                         help="测试几个矩阵")
+    parser.add_argument("--n_oversamples", type=int, default=10,
+                        help="随机化 SVD 过采样数")
+    parser.add_argument("--n_power_iter", type=int, default=2,
+                        help="随机化 SVD Power Iteration 次数")
     args = parser.parse_args()
 
     # 加载模型，提取 Linear 权重
@@ -73,7 +82,9 @@ def benchmark():
 
         # --- Randomized SVD ---
         t2 = time.time()
-        U2, S2, Vh2 = randomized_svd(W, k, n_oversamples=10, n_power_iter=2)
+        U2, S2, Vh2 = randomized_svd(W, k,
+                                          n_oversamples=args.n_oversamples,
+                                          n_power_iter=args.n_power_iter)
         t3 = time.time()
 
         # --- 精度比较 ---

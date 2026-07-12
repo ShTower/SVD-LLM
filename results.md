@@ -8,16 +8,18 @@
 
 ## 一、WikiText-2 压缩效果完整对比
 
-| Method | 压缩比 | SVD 类型 | SVD 耗时 | PPL | 论文 PPL |
+| Method | 压缩比 | SVD 类型 | 耗时 | PPL | 论文 PPL |
 |--------|:--:|------|:--:|:--:|:--:|
 | Original | — | — | — | **5.68** | 5.68 |
-| Vanilla SVD (无白化) | 20% | Regular | ~90 min | **14.33** | — |
-| SVD-LLM (W) | 20% | Regular | 142 min | **7.89** | 7.94 ✅ |
-| SVD-LLM (W) | 40% | Regular | 137 min | **13.77** | 13.73 ✅ |
-| SVD-LLM (W) | 40% | Randomized | 52 min | 164 ❌ | — |
-| SVD-LLM | 20% | Regular | — | 16.96 ⚠️ | 7.73 |
+| Vanilla SVD (无白化) | 20% | Regular | ~1.5h | **14.33** | — |
+| SVD-LLM (W) | 20% | Regular | ~3.5h | **7.89** | 7.94 ✅ |
+| SVD-LLM (+U LoRA) | 20% | Regular | +4.8h | **7.27** | — |
+| **SVD-LLM (full)** | 20% | Regular | +4.8h | **7.56** | 7.73 ✅ |
+| SVD-LLM (W) | 40% | Regular | ~3h | **13.77** | 13.73 ✅ |
+| SVD-LLM (W) | 40% | Randomized | ~1.5h | 164 ❌ | — |
 
-**白化收益**: PPL 14.33 → 7.89，降低 45%。
+**白化收益**: PPL 14.33 → 7.89，降低 45%  
+**LoRA 收益**: PPL 7.89 → 7.56，再降 4%，优于论文 7.73
 
 ---
 
@@ -65,6 +67,8 @@
 | SVD @20% (Regular) | ~2h 22min |
 | SVD @40% (Regular) | ~2h 17min |
 | SVD @40% (Randomized) | ~52 min |
+| LoRA 第一轮 (微调 U) | ~4h 50min |
+| LoRA 第二轮 (微调 V) | ~4h 46min |
 | PPL 评估 | ~1.5 min |
 | 效率评估 | ~16 min |
 

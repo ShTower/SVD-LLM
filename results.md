@@ -6,16 +6,18 @@
 
 ---
 
-## 一、WikiText-2 压缩效果对比
+## 一、WikiText-2 压缩效果完整对比
 
-| Method | PPL | 论文 PPL | 说明 |
-|--------|:--:|:--:|------|
-| Original | **5.68** | 5.68 | 完全一致 |
-| Vanilla SVD (无白化) | **14.33** | — | Step 3, SVD 截断后闭式解更新 |
-| SVD-LLM (W) @20% | **7.89** | 7.94 | **优于论文** |
-| SVD-LLM @20% | 16.96 ⚠️ | 7.73 | NPU lstsq 精度异常 |
+| Method | 压缩比 | SVD 类型 | SVD 耗时 | PPL | 论文 PPL |
+|--------|:--:|------|:--:|:--:|:--:|
+| Original | — | — | — | **5.68** | 5.68 |
+| Vanilla SVD (无白化) | 20% | Regular | ~90 min | **14.33** | — |
+| SVD-LLM (W) | 20% | Regular | 142 min | **7.89** | 7.94 ✅ |
+| SVD-LLM (W) | 40% | Regular | 137 min | **13.77** | 13.73 ✅ |
+| SVD-LLM (W) | 40% | Randomized | 52 min | 164 ❌ | — |
+| SVD-LLM | 20% | Regular | — | 16.96 ⚠️ | 7.73 |
 
-白化收益: PPL 14.33 → 7.89，降低 **45%**。
+**白化收益**: PPL 14.33 → 7.89，降低 45%。
 
 ---
 
@@ -27,17 +29,30 @@
 | 权重显存 | 20.55 GB |
 | 激活显存 | 8.02 GB |
 | 吞吐量 | **42.16 tokens/sec** |
-| 每次生成 | ~97s (1024 tokens) |
 
 ---
 
-## 三、随机化 SVD 加速效果
+## 三、Level-2: 随机化 SVD 改进分析
 
-| 压缩比 | k 值 | 加速比 | Q/K 精度 | 全模型预估 |
-|--------|:----:|:-----:|:--------:|:--------:|
-| 20% (ratio=0.8) | 1638 | 3.3x | ⚠️ 偏差较大 | 1.3h → 0.4h |
-| 40% (ratio=0.6) | 1228 | **5.6x** | ⚠️ 可接受 | 1.4h → 0.2h |
-| 60% (ratio=0.4) | ~700 | ~8x | ✅ 预期良好 | — |
+### 3.1 Benchmark（重构误差）
+
+| 压缩比 | k 值 | 加速比 | 重构误差(reg/rng) |
+|--------|:----:|:-----:|:-----------------:|
+| 20% | 1638 | 3.3x | 0.17 / 0.19 |
+| 40% | 1228 | 5.6x | 0.16 / 0.20 |
+
+### 3.2 实际压缩+PPL
+
+| 压缩比 | SVD | 耗时 | PPL |
+|--------|------|:--:|:--:|
+| 40% | Regular | 137 min | 13.77 |
+| 40% | Randomized (`--rng_svd`) | 52 min | 164 |
+
+### 3.3 结论
+
+随机化 SVD 在重构误差 benchmark 中表现可接受，但实际 PPL 恶化 12 倍。原因：白化矩阵的中间奇异值对精度至关重要，随机化逼近丢失了这些信息。这从反面验证了论文使用完整 SVD 的必要性。
+
+**改进方向**: 自适应 power iteration、混合策略（低压缩比 Regular / 高压缩比 Randomized）、随机化后精确校正。
 
 ---
 
@@ -47,10 +62,9 @@
 |------|------|
 | 模型下载 | ~30 min |
 | Profiling (白化矩阵) | ~31 min |
-| SVD 压缩 | ~2h 22min |
-| Step 1 总计 | ~3.5h |
-| Step 2 (whitening+update) | ~5.5h |
-| Step 3 (update only) | ~1.5h |
+| SVD @20% (Regular) | ~2h 22min |
+| SVD @40% (Regular) | ~2h 17min |
+| SVD @40% (Randomized) | ~52 min |
 | PPL 评估 | ~1.5 min |
 | 效率评估 | ~16 min |
 
@@ -58,9 +72,10 @@
 
 ## 五、文件清单
 
-| 文件 | 大小 | 说明 |
-|------|------|------|
-| `output/jeffwan_llama_7b_hf_whitening_only_0.8.pt` | 20 GB | SVD-LLM (W) 压缩模型 |
-| `output/jeffwan_llama_7b_hf_profiling_wikitext2_256_3.pt` | 53 GB | 白化矩阵缓存 |
-| `output/jeffwan_llama_7b_hf_whitening_then_update_0.8.pt` | 21 GB | Step 2 结果 |
-| `output/jeffwan_llama_7b_hf_update_only_0.8.pt` | 21 GB | Step 3: Vanilla SVD |
+| 文件 | 说明 |
+|------|------|
+| `output/jeffwan_llama_7b_hf_whitening_only_0.8.pt` | SVD-LLM (W) @20% 压缩模型 |
+| `output/jeffwan_llama_7b_hf_whitening_only_0.6.pt` | SVD-LLM (W) @40% Regular 压缩模型 |
+| `output/jeffwan_llama_7b_hf_profiling_wikitext2_256_3.pt` | 白化矩阵缓存 (53 GB) |
+| `output/jeffwan_llama_7b_hf_whitening_then_update_0.8.pt` | Step 2 结果 ⚠️ |
+| `output/jeffwan_llama_7b_hf_update_only_0.8.pt` | Step 3: Vanilla SVD 基线 |

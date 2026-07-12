@@ -189,22 +189,6 @@ python SVDLLM.py --step 4 --model_path ./first_half/merge.pt \
     --lora ./second_half
 ```
 
-### 4.2 与 GPTQ 结合
-
-参考 `svdllm_gptq.sh`：
-
-```bash
-# Step 1: 白化 + SVD 压缩
-python SVDLLM.py --model jeffwan/llama-7b-hf --step 1 --ratio 0.2 \
-    --whitening_nsamples 256 --dataset wikitext2 --seed 3 \
-    --model_seq_len 2048 --save_path .
-
-# Step: GPTQ 4-bit 量化
-python quant_llama.py \
-    --model_path whitening/jeffwan_llama_7b_hf_whitening_0.2.pt \
-    --dataset c4 --wbits 4 --true-sequential --act-order --new-eval \
-    --save svdllm_gptq_4.pt
-```
 
 ---
 
@@ -463,18 +447,4 @@ low_rank = int(intermediate * hidden * ratio / (intermediate + hidden))
 └──────────────────┘  └──────────────────┘
 ```
 
----
 
-## 十、常见问题 FAQ
-
-**Q: 如何判断压缩后的模型是否正常工作？**
-A: 运行 Step 4 查看 PPL。LLaMA-7B 原始 PPL ≈5.68，20% 压缩后仅白化约 7.94，加 LoRA 微调后可降至 7.73。
-
-**Q: 如何在自定义模型上使用？**
-A: 需要在 `component/` 下添加对应模型架构的 SVD 版组件，并在 `SVDLLM.py` 中添加对应的模型名称判断分支。
-
-**Q: 白化矩阵的 `profiling_mat` 可以复用吗？**
-A: 可以。通过 `--profiling_mat_path` 加载之前保存的 `.pt` 文件，避免重复计算白化矩阵。
-
-**Q: 显存不够怎么办？**
-A: 使用 `--run_low_resource` 标志启用逐层处理模式，LLaMA-7B 只需约 15G 显存。

@@ -3,7 +3,7 @@
 > **论文**: SVD-LLM: Truncation-aware Singular Value Decomposition for Large Language Model Compression  
 > **会议**: ICLR 2025  
 > **作者**: Xin Wang, Yu Zheng, Zhongwei Wan, Mi Zhang (The Ohio State University, Michigan State University)  
-> **复现者**: [你的名字]  
+> **复现者**: 王振宇 241880083
 > **复现环境**: 华为 Ascend 910B 80GB × 1 + 20 vCPU + 160GB RAM  
 > **代码**: https://github.com/ShTower/SVD-LLM (npu 分支)
 
